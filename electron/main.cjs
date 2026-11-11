@@ -1,5 +1,6 @@
 const { app, BrowserWindow, ipcMain, screen } = require('electron');
 const ExcelJS = require('exceljs');
+const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 
@@ -71,10 +72,12 @@ async function loadWorkbook() {
   const workbook = new ExcelJS.Workbook();
   const filePath = resultsFilePath();
   try {
-    await workbook.xlsx.readFile(filePath);
+    await fs.access(filePath);
   } catch (error) {
-    if (error.code !== 'ENOENT') throw error;
+    if (error.code === 'ENOENT') return workbook;
+    throw error;
   }
+  await workbook.xlsx.readFile(filePath);
   return workbook;
 }
 
@@ -168,7 +171,7 @@ function registerIpcHandlers() {
     sheet.columns = headers.map((header) => ({ header, width: Math.max(18, header.length + 2) }));
 
     const filePath = resultsFilePath();
-    await require('node:fs/promises').mkdir(path.dirname(filePath), { recursive: true });
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
     await workbook.xlsx.writeFile(filePath);
     return { saved: true, filePath, record: result };
   });

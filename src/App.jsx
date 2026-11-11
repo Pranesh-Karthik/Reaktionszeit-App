@@ -21,6 +21,7 @@ function getMedian(values) {
 export default function App() {
   const [participantName, setParticipantName] = useState('');
   const [participantId, setParticipantId] = useState('');
+  const [selectedProfileId, setSelectedProfileId] = useState('new');
   const [testType, setTestType] = useState('visual');
   const [phase, setPhase] = useState('idle');
   const [device, setDevice] = useState(null);
@@ -34,6 +35,7 @@ export default function App() {
   const stimulusAtRef = useRef(null);
   const audioContextRef = useRef(null);
   const pendingResultRef = useRef(null);
+  const activeParticipantRef = useRef(null);
 
   const transitionTo = useCallback((nextPhase) => {
     phaseRef.current = nextPhase;
@@ -67,6 +69,21 @@ export default function App() {
     if (!id) return [];
     return records.filter((record) => record.participantId === id);
   }, [participantId, records]);
+
+  const participants = useMemo(() => {
+    const byId = new Map();
+    for (const record of records) {
+      if (record.participantId) {
+        byId.set(record.participantId, {
+          participantId: record.participantId,
+          participantName: record.participantName,
+        });
+      }
+    }
+    return [...byId.values()].sort((a, b) => a.participantName.localeCompare(b.participantName));
+  }, [records]);
+
+  const selectedProfile = participants.find((person) => person.participantId === selectedProfileId);
 
   const statistics = useMemo(() => Object.fromEntries(
     Object.entries(testLabels).map(([key, label]) => {
@@ -137,10 +154,17 @@ export default function App() {
   }, [startAudioSignal, testType, transitionTo]);
 
   const startTest = async () => {
-    if (!participantName.trim() || !participantId.trim()) {
-      setError('Bitte zuerst Name und ID ausfüllen.');
+    const nameToSave = (selectedProfile?.participantName || participantName).trim();
+    let idToSave = selectedProfile?.participantId || participantId;
+    if (!nameToSave) {
+      setError('Bitte zuerst den Namen ausfüllen.');
       return;
     }
+    if (!idToSave) {
+      idToSave = crypto.randomUUID();
+      setParticipantId(idToSave);
+    }
+    activeParticipantRef.current = { participantId: idToSave, participantName: nameToSave };
     setError('');
     setLatestResult(null);
     setIsAudioReady(true);
@@ -178,8 +202,8 @@ export default function App() {
 
     const result = {
       runId: crypto.randomUUID(),
-      participantId: participantId.trim(),
-      participantName: participantName.trim(),
+      participantId: activeParticipantRef.current?.participantId || participantId.trim(),
+      participantName: activeParticipantRef.current?.participantName || participantName.trim(),
       testType: testLabels[testType],
       reactionTimeMs,
       timestamp: new Date().toISOString(),
@@ -199,6 +223,9 @@ export default function App() {
         reactionTimeMs: saved.record.reactionTimeMs,
         timestamp: saved.record.timestamp,
       }]);
+      setParticipantId(saved.record.participantId);
+      setParticipantName(saved.record.participantName);
+      setSelectedProfileId(saved.record.participantId);
       pendingResultRef.current = null;
       transitionTo('done');
     } catch (saveError) {
@@ -215,6 +242,9 @@ export default function App() {
       const saved = await window.reactionApp.saveResult(pendingResultRef.current);
       setLatestResult(saved.record);
       setFilePath(saved.filePath);
+      setParticipantId(saved.record.participantId);
+      setParticipantName(saved.record.participantName);
+      setSelectedProfileId(saved.record.participantId);
       await refreshRecords();
       pendingResultRef.current = null;
       transitionTo('done');
@@ -222,6 +252,34 @@ export default function App() {
       setError(`Speichern fehlgeschlagen: ${saveError.message}.`);
       transitionTo('save-error');
     }
+  };
+
+  const selectProfile = (event) => {
+    const nextId = event.target.value;
+    setSelectedProfileId(nextId);
+    setError('');
+    if (nextId === 'new') {
+      setParticipantName('');
+      setParticipantId('');
+      return;
+    }
+    const profile = participants.find((person) => person.participantId === nextId);
+    if (profile) {
+      setParticipantName(profile.participantName);
+      setParticipantId(profile.participantId);
+    }
+  };
+
+  const repeatMeasurement = () => {
+    const confirmed = window.confirm(
+      'Der aktuelle Durchgang wurde nicht gespeichert und wird verworfen. Möchtest du den Test trotzdem erneut durchführen?',
+    );
+    if (!confirmed) return;
+    pendingResultRef.current = null;
+    stimulusAtRef.current = null;
+    setLatestResult(null);
+    setError('');
+    transitionTo('idle');
   };
 
   const cancelTest = () => {
@@ -280,31 +338,40 @@ export default function App() {
               </div>
               <span className="step-indicator">01</span>
             </div>
+            {participants.length > 0 && (
+              <label className="profile-picker">
+                Gespeichertes Profil
+                <select disabled={isActive} onChange={selectProfile} value={selectedProfileId}>
+                  <option value="new">Neue Person – ID automatisch vergeben</option>
+                  {participants.map((person) => (
+                    <option key={person.participantId} value={person.participantId}>
+                      {person.participantName} · {person.participantId.slice(0, 8)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             <div className="field-row">
               <label>
                 Name <span className="required">*</span>
                 <input
                   autoComplete="off"
-                  disabled={isActive}
+                  disabled={isActive || Boolean(selectedProfile)}
                   maxLength={120}
-                  onChange={(event) => setParticipantName(event.target.value)}
+                  onChange={(event) => {
+                    setParticipantName(event.target.value);
+                    setParticipantId('');
+                  }}
                   placeholder="Vor- und Nachname"
-                  value={participantName}
+                  value={selectedProfile?.participantName || participantName}
                 />
               </label>
-              <label>
-                ID <span className="required">*</span>
-                <input
-                  autoComplete="off"
-                  disabled={isActive}
-                  maxLength={80}
-                  onChange={(event) => setParticipantId(event.target.value)}
-                  placeholder="Teilnehmer-ID"
-                  value={participantId}
-                />
-              </label>
+              <div className="generated-id-field">
+                <span className="generated-id-label">Teilnehmer-ID</span>
+                <output>{selectedProfile?.participantId || participantId || 'Wird beim Start automatisch erstellt'}</output>
+              </div>
             </div>
-            <p className="field-hint">Beide Angaben sind erforderlich und werden mit jedem Durchgang gespeichert.</p>
+            <p className="field-hint">Der Name ist erforderlich. Die ID wird automatisch erzeugt und für weitere Durchgänge wiederverwendet.</p>
           </section>
 
           <section className="panel test-panel" aria-labelledby="test-title">
@@ -363,7 +430,10 @@ export default function App() {
                 <button className="response-button" onClick={saveResponse} type="button">Jetzt reagieren · Leertaste</button>
               ) : null}
               {phase === 'save-error' ? (
-                <button className="primary-button" onClick={retrySave} type="button">Speichern erneut versuchen</button>
+                <>
+                  <button className="primary-button" onClick={retrySave} type="button">Speichern</button>
+                  <button className="secondary-button" onClick={repeatMeasurement} type="button">Erneut messen</button>
+                </>
               ) : null}
               {latestResult && phase === 'done' ? (
                 <div className="result-chip"><span>Reaktionszeit</span><strong>{formatMs(latestResult.reactionTimeMs)}</strong></div>
@@ -382,7 +452,7 @@ export default function App() {
               <span className="record-count">{currentRecords.length} gespeichert</span>
             </div>
             {!participantId.trim() ? (
-              <p className="empty-state">Gib eine ID ein, um die gespeicherten Ergebnisse dieser Person zu sehen.</p>
+              <p className="empty-state">Wähle ein gespeichertes Profil oder lege eine neue Person an, um die Statistik zu sehen.</p>
             ) : (
               <div className="stats-grid">
                 {Object.entries(testLabels).map(([key, label]) => {
